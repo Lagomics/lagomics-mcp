@@ -8,3 +8,13 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: "3.11"
+
+  - type: web
+    name: lagomics-demo
+    runtime: python
+    buildCommand: pip install -r demo/requirements.txt
+    startCommand: streamlit run demo/app.py --server.port $PORT --server.address 0.0.0.0
+    plan: free
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11"
