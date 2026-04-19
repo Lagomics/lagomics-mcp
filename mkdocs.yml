@@ -1,0 +1,21 @@
+site_name: Lagomics MCP
+site_description: MCP servers for biotech — live access to PubMed, UniProt, PDB, AlphaFold, and BLAST
+site_url: https://lagomics.github.io/lagomics-mcp
+repo_url: https://github.com/Lagomics/lagomics-mcp
+repo_name: Lagomics/lagomics-mcp
+
+theme:
+  name: material
+  palette:
+    primary: teal
+    accent: cyan
+  features:
+    - navigation.instant
+    - navigation.sections
+    - content.code.copy
+
+nav:
+  - Home: index.md
+  - Quickstart: quickstart.md
+  - Tools Reference: tools.md
+  - Self-hosting: self-host.md
