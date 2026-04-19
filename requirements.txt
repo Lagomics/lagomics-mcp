@@ -1,3 +1,4 @@
-mcp
+mcp[cli]
 requests
 python-dotenv
+uvicorn
