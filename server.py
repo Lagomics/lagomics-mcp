@@ -274,7 +274,8 @@ BLAST = "https://blast.ncbi.nlm.nih.gov/blast/Blast.cgi"
 
 
 def _blast_submit(sequence: str, program: str, database: str) -> str:
-    r = requests.put(BLAST, data={
+    # NCBI requires POST (not PUT) for BLAST submissions
+    r = requests.post(BLAST, data={
         "CMD": "Put", "PROGRAM": program, "DATABASE": database,
         "QUERY": sequence, "FORMAT_TYPE": "JSON2", "HITLIST_SIZE": 10,
     })
@@ -284,32 +285,31 @@ def _blast_submit(sequence: str, program: str, database: str) -> str:
     raise ValueError("Could not extract RID from BLAST response")
 
 
-def _blast_poll(rid: str, timeout: int = 120) -> str:
+def _blast_poll(rid: str, timeout: int = 300) -> bytes:
+    # Returns raw bytes — NCBI JSON2 response is a ZIP archive
     deadline = time.time() + timeout
     while time.time() < deadline:
         r = requests.get(BLAST, params={"CMD": "Get", "RID": rid, "FORMAT_TYPE": "JSON2"})
-        if "Status=WAITING" in r.text:
+        if "WAITING" in r.text:
             time.sleep(10)
             continue
-        if "Status=FAILED" in r.text:
+        if "FAILED" in r.text:
             raise RuntimeError(f"BLAST job {rid} failed")
-        if "Status=UNKNOWN" in r.text:
+        if "UNKNOWN" in r.text:
             raise RuntimeError(f"BLAST job {rid} expired")
-        return r.text
+        return r.content
     raise TimeoutError(f"BLAST job {rid} timed out after {timeout}s")
 
 
-def _blast_parse(raw: str, max_hits: int) -> list[dict]:
-    # Seek to the BlastOutput2 wrapper specifically to skip any preamble JSON
-    idx = raw.find('{"BlastOutput2"')
-    if idx == -1:
-        idx = raw.find('{')
-    if idx == -1:
-        return [{"error": "No JSON found in BLAST response"}]
+def _blast_parse(raw_bytes: bytes, max_hits: int) -> list[dict]:
+    # NCBI JSON2 format returns a ZIP containing an index JSON and a results JSON
+    import io, zipfile
     try:
-        data, _ = json.JSONDecoder().raw_decode(raw, idx)
-        hits = data["BlastOutput2"][0]["report"]["results"]["search"]["hits"]
-    except (json.JSONDecodeError, KeyError, IndexError) as e:
+        with zipfile.ZipFile(io.BytesIO(raw_bytes)) as zf:
+            result_file = next(n for n in zf.namelist() if n.endswith("_1.json"))
+            data = json.loads(zf.read(result_file))
+        hits = data["BlastOutput2"]["report"]["results"]["search"]["hits"]
+    except Exception as e:
         return [{"error": f"Could not parse BLAST response: {e}"}]
     results = []
     for hit in hits[:max_hits]:
@@ -328,29 +328,27 @@ def _blast_parse(raw: str, max_hits: int) -> list[dict]:
 
 @mcp.tool()
 def blast_protein(sequence: str, database: str = "swissprot", max_hits: int = 10) -> list[dict]:
-    """Run BLASTp (protein vs protein) on NCBI.
-    database: 'swissprot' (fast, ~30s, recommended), 'pdb' (structures only), 'nr' (comprehensive but slow, 3-5min).
+    """Run BLASTp (protein vs protein) on NCBI. Takes 2-3 minutes.
+    database: 'swissprot' (recommended), 'pdb' (structures only), 'nr' (comprehensive, slower).
     Strips spaces/gaps from sequence automatically."""
     sequence = sequence.replace(" ", "").replace("-", "")
-    timeout = 300 if database == "nr" else 120
-    return _blast_parse(_blast_poll(_blast_submit(sequence, "blastp", database), timeout=timeout), max_hits)
+    return _blast_parse(_blast_poll(_blast_submit(sequence, "blastp", database)), max_hits)
 
 
 @mcp.tool()
 def blast_nucleotide(sequence: str, database: str = "nt", max_hits: int = 10) -> list[dict]:
-    """Run BLASTn (nucleotide vs nucleotide) on NCBI.
-    database: 'nt' (fast, recommended), 'refseq_rna'. Strips spaces from sequence automatically."""
+    """Run BLASTn (nucleotide vs nucleotide) on NCBI. Takes 2-3 minutes.
+    database: 'nt' (recommended), 'refseq_rna'. Strips spaces from sequence automatically."""
     sequence = sequence.replace(" ", "").replace("-", "")
-    timeout = 300 if database in ("nt", "nr") else 120
-    return _blast_parse(_blast_poll(_blast_submit(sequence, "blastn", database), timeout=timeout), max_hits)
+    return _blast_parse(_blast_poll(_blast_submit(sequence, "blastn", database)), max_hits)
 
 
 @mcp.tool()
 def blast_translated(sequence: str, database: str = "swissprot", max_hits: int = 10) -> list[dict]:
-    """Run BLASTx (translated nucleotide vs protein) on NCBI. Strips spaces from sequence automatically."""
+    """Run BLASTx (translated nucleotide vs protein) on NCBI. Takes 2-3 minutes.
+    Strips spaces from sequence automatically."""
     sequence = sequence.replace(" ", "").replace("-", "")
-    timeout = 300 if database == "nr" else 120
-    return _blast_parse(_blast_poll(_blast_submit(sequence, "blastx", database), timeout=timeout), max_hits)
+    return _blast_parse(_blast_poll(_blast_submit(sequence, "blastx", database)), max_hits)
 
 
 # ─────────────────────────────────────────────
