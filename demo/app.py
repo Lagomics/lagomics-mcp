@@ -1,10 +1,15 @@
 import asyncio
+import httpx
+import nest_asyncio
 import anthropic
 import streamlit as st
 from mcp import ClientSession
 from mcp.client.sse import sse_client
 
+nest_asyncio.apply()  # fix: Streamlit runs its own event loop
+
 SERVER_URL = "https://lagomics-mcp.onrender.com/sse"
+WARMUP_URL = "https://lagomics-mcp.onrender.com/"
 
 EXAMPLES = [
     "Tell me everything about TP53 — function, AlphaFold confidence, PDB structures with ligands, and 3 recent papers.",
@@ -36,8 +41,16 @@ question = st.text_area(
 )
 
 
+def warmup_server():
+    """Ping the server to wake it from Render's free-tier sleep."""
+    try:
+        httpx.get(WARMUP_URL, timeout=30)
+    except Exception:
+        pass
+
+
 async def run_query(question: str, api_key: str):
-    async with sse_client(SERVER_URL) as (read, write):
+    async with sse_client(SERVER_URL, timeout=60) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
             result = await session.list_tools()
@@ -52,7 +65,6 @@ async def run_query(question: str, api_key: str):
 
             client = anthropic.Anthropic(api_key=api_key)
             messages = [{"role": "user", "content": question}]
-
             tool_log = []
             final_text = ""
 
@@ -95,21 +107,29 @@ if st.button("Search", type="primary", disabled=not (api_key and question)):
     elif not question:
         st.error("Enter a question.")
     else:
-        with st.spinner("Querying databases..."):
-            try:
-                answer, tool_log = asyncio.run(run_query(question, api_key))
+        try:
+            with st.spinner("Waking up server (first request may take ~30s on free tier)..."):
+                warmup_server()
 
-                st.subheader("Answer")
-                st.markdown(answer)
+            with st.spinner("Querying databases..."):
+                loop = asyncio.get_event_loop()
+                answer, tool_log = loop.run_until_complete(run_query(question, api_key))
 
-                if tool_log:
-                    with st.expander(f"Database calls ({len(tool_log)} tools called)"):
-                        for name, inputs, output in tool_log:
-                            st.markdown(f"**`{name}`** — `{inputs}`")
-                            st.code(output[:500] + ("..." if len(output) > 500 else ""), language="json")
+            st.subheader("Answer")
+            st.markdown(answer)
 
-            except Exception as e:
-                st.error(f"Error: {e}")
+            if tool_log:
+                with st.expander(f"Database calls ({len(tool_log)} tools called)"):
+                    for name, inputs, output in tool_log:
+                        st.markdown(f"**`{name}`** — `{inputs}`")
+                        st.code(output[:500] + ("..." if len(output) > 500 else ""), language="json")
+
+        except Exception as e:
+            msg = str(e)
+            if "TaskGroup" in msg or "ConnectionError" in msg or "ConnectError" in msg:
+                st.error("Could not reach the MCP server. It may still be waking up — wait 15 seconds and try again.")
+            else:
+                st.error(f"Error: {msg}")
 
 st.divider()
 st.caption(
