@@ -23,7 +23,10 @@ PUBMED = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
 
 @mcp.tool()
 def pubmed_search(query: str, max_results: int = 10) -> list[dict]:
-    """Search PubMed articles. Returns PMID, title, authors, journal, and date."""
+    """Search PubMed articles. Returns PMID, title, authors, journal, and date.
+    Keep queries concise — PubMed ANDs all terms, so long queries return fewer results.
+    Use 2-4 key terms for best results. For date filtering use e.g. '2024[dp]'."""
+    query = " ".join(query.split()[:20])  # cap at 20 tokens to avoid over-constrained AND chains
     r = requests.get(f"{PUBMED}/esearch.fcgi", params={
         "db": "pubmed", "term": query, "retmax": max_results, "retmode": "json"
     })
@@ -139,7 +142,9 @@ PDB_SEARCH = "https://search.rcsb.org/rcsbsearch/v2/query"
 
 @mcp.tool()
 def pdb_search(query: str, max_results: int = 10) -> list[dict]:
-    """Search the PDB for protein structures by name, molecule, or keyword."""
+    """Search the PDB for protein structures by name, molecule, or keyword.
+    Uses full-text matching — prefer protein/gene names over brand drug names.
+    e.g. use 'KRAS G12C' rather than 'sotorasib'; use 'AMG-510' or the PDB ligand ID."""
     payload = {
         "query": {"type": "terminal", "service": "full_text", "parameters": {"value": query}},
         "return_type": "entry",
@@ -209,12 +214,14 @@ def alphafold_get(uniprot_accession: str) -> dict:
     if r.status_code == 404 or not r.json():
         return {"error": f"No AlphaFold prediction found for {uniprot_accession}"}
     e = r.json()[0]
+    start = e.get("uniprotStart", 1) or 1
+    end = e.get("uniprotEnd")
     return {
         "accession": e.get("uniprotAccession"),
         "gene": e.get("gene"),
         "protein_name": e.get("uniprotDescription"),
         "organism": e.get("organismScientificName"),
-        "sequence_length": e.get("sequenceLength"),
+        "sequence_length": (end - start + 1) if end else None,
         "model_version": e.get("latestVersion"),
         "mean_plddt": e.get("globalMetricValue"),
         "pdb_url": e.get("pdbUrl"),
@@ -237,11 +244,13 @@ def alphafold_search(gene_name: str, organism: str = "Homo sapiens") -> list[dic
         if af.status_code != 200 or not af.json():
             continue
         e = af.json()[0]
+        start = e.get("uniprotStart", 1) or 1
+        end = e.get("uniprotEnd")
         results.append({
             "accession": accession,
             "gene": e.get("gene"),
             "protein_name": e.get("uniprotDescription"),
-            "sequence_length": e.get("sequenceLength"),
+            "sequence_length": (end - start + 1) if end else None,
             "mean_plddt": e.get("globalMetricValue"),
             "pdb_url": e.get("pdbUrl"),
         })
@@ -281,13 +290,14 @@ def _blast_poll(rid: str, timeout: int = 120) -> str:
 
 
 def _blast_parse(raw: str, max_hits: int) -> list[dict]:
-    match = re.search(r'\{.*\}', raw, re.DOTALL)
-    if not match:
-        return [{"error": "Could not parse BLAST response"}]
+    idx = raw.find('{')
+    if idx == -1:
+        return [{"error": "No JSON found in BLAST response"}]
     try:
-        hits = json.loads(match.group())["BlastOutput2"][0]["report"]["results"]["search"]["hits"]
-    except (KeyError, IndexError):
-        return [{"error": "No hits found"}]
+        data, _ = json.JSONDecoder().raw_decode(raw, idx)
+        hits = data["BlastOutput2"][0]["report"]["results"]["search"]["hits"]
+    except (json.JSONDecodeError, KeyError, IndexError) as e:
+        return [{"error": f"Could not parse BLAST response: {e}"}]
     results = []
     for hit in hits[:max_hits]:
         desc = hit["description"][0]
