@@ -26,7 +26,10 @@ def pubmed_search(query: str, max_results: int = 10) -> list[dict]:
     """Search PubMed articles. Returns PMID, title, authors, journal, and date.
     Keep queries concise — PubMed ANDs all terms, so long queries return fewer results.
     Use 2-4 key terms for best results. For date filtering use e.g. '2024[dp]'."""
-    query = " ".join(query.split()[:20])  # cap at 20 tokens to avoid over-constrained AND chains
+    import re as _re
+    # Strip bare 4-digit years (cause impossible AND with other date terms) and cap tokens
+    tokens = [t for t in query.split() if not _re.fullmatch(r'\d{4}', t)][:8]
+    query = " ".join(tokens)
     r = requests.get(f"{PUBMED}/esearch.fcgi", params={
         "db": "pubmed", "term": query, "retmax": max_results, "retmode": "json"
     })
@@ -144,17 +147,24 @@ PDB_SEARCH = "https://search.rcsb.org/rcsbsearch/v2/query"
 def pdb_search(query: str, max_results: int = 10) -> list[dict]:
     """Search the PDB for protein structures by name, molecule, or keyword.
     Uses full-text matching — prefer protein/gene names over brand drug names.
-    e.g. use 'KRAS G12C' rather than 'sotorasib'; use 'AMG-510' or the PDB ligand ID."""
-    payload = {
-        "query": {"type": "terminal", "service": "full_text", "parameters": {"value": query}},
-        "return_type": "entry",
-        "request_options": {"paginate": {"start": 0, "rows": max_results}}
-    }
-    r = requests.post(PDB_SEARCH, json=payload)
-    if r.status_code != 200:
-        return []
+    e.g. use 'KRAS G12C' rather than 'sotorasib'; use 'AMG-510' or the PDB ligand ID.
+    If 0 results, automatically retries with only the first 2 query terms."""
+    def _search(q):
+        payload = {
+            "query": {"type": "terminal", "service": "full_text", "parameters": {"value": q}},
+            "return_type": "entry",
+            "request_options": {"paginate": {"start": 0, "rows": max_results}}
+        }
+        r = requests.post(PDB_SEARCH, json=payload)
+        return r.json().get("result_set", []) if r.status_code == 200 else []
+
+    hits = _search(query)
+    if not hits:
+        fallback = " ".join(query.split()[:2])
+        if fallback != query:
+            hits = _search(fallback)
     results = []
-    for hit in r.json().get("result_set", []):
+    for hit in hits:
         pdb_id = hit["identifier"]
         info = requests.get(f"{PDB_DATA}/entry/{pdb_id}").json()
         results.append({
@@ -290,7 +300,10 @@ def _blast_poll(rid: str, timeout: int = 120) -> str:
 
 
 def _blast_parse(raw: str, max_hits: int) -> list[dict]:
-    idx = raw.find('{')
+    # Seek to the BlastOutput2 wrapper specifically to skip any preamble JSON
+    idx = raw.find('{"BlastOutput2"')
+    if idx == -1:
+        idx = raw.find('{')
     if idx == -1:
         return [{"error": "No JSON found in BLAST response"}]
     try:
@@ -314,21 +327,30 @@ def _blast_parse(raw: str, max_hits: int) -> list[dict]:
 
 
 @mcp.tool()
-def blast_protein(sequence: str, database: str = "nr", max_hits: int = 10) -> list[dict]:
-    """Run BLASTp (protein vs protein) on NCBI. Takes 30-60s. database: nr, swissprot, pdb."""
-    return _blast_parse(_blast_poll(_blast_submit(sequence, "blastp", database)), max_hits)
+def blast_protein(sequence: str, database: str = "swissprot", max_hits: int = 10) -> list[dict]:
+    """Run BLASTp (protein vs protein) on NCBI.
+    database: 'swissprot' (fast, ~30s, recommended), 'pdb' (structures only), 'nr' (comprehensive but slow, 3-5min).
+    Strips spaces/gaps from sequence automatically."""
+    sequence = sequence.replace(" ", "").replace("-", "")
+    timeout = 300 if database == "nr" else 120
+    return _blast_parse(_blast_poll(_blast_submit(sequence, "blastp", database), timeout=timeout), max_hits)
 
 
 @mcp.tool()
 def blast_nucleotide(sequence: str, database: str = "nt", max_hits: int = 10) -> list[dict]:
-    """Run BLASTn (nucleotide vs nucleotide) on NCBI. Takes 30-60s. database: nt, refseq_rna."""
-    return _blast_parse(_blast_poll(_blast_submit(sequence, "blastn", database)), max_hits)
+    """Run BLASTn (nucleotide vs nucleotide) on NCBI.
+    database: 'nt' (fast, recommended), 'refseq_rna'. Strips spaces from sequence automatically."""
+    sequence = sequence.replace(" ", "").replace("-", "")
+    timeout = 300 if database in ("nt", "nr") else 120
+    return _blast_parse(_blast_poll(_blast_submit(sequence, "blastn", database), timeout=timeout), max_hits)
 
 
 @mcp.tool()
-def blast_translated(sequence: str, database: str = "nr", max_hits: int = 10) -> list[dict]:
-    """Run BLASTx (translated nucleotide vs protein) on NCBI. Takes 30-60s."""
-    return _blast_parse(_blast_poll(_blast_submit(sequence, "blastx", database)), max_hits)
+def blast_translated(sequence: str, database: str = "swissprot", max_hits: int = 10) -> list[dict]:
+    """Run BLASTx (translated nucleotide vs protein) on NCBI. Strips spaces from sequence automatically."""
+    sequence = sequence.replace(" ", "").replace("-", "")
+    timeout = 300 if database == "nr" else 120
+    return _blast_parse(_blast_poll(_blast_submit(sequence, "blastx", database), timeout=timeout), max_hits)
 
 
 # ─────────────────────────────────────────────
