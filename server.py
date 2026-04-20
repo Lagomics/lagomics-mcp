@@ -24,16 +24,18 @@ PUBMED = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
 @mcp.tool()
 def pubmed_search(query: str, max_results: int = 10) -> list[dict]:
     """Search PubMed articles. Returns PMID, title, authors, journal, and date.
-    Keep queries concise — PubMed ANDs all terms, so long queries return fewer results.
-    Use 2-4 key terms for best results. For date filtering use e.g. '2024[dp]'."""
+    Automatically relaxes over-constrained queries by dropping terms until results appear."""
     import re as _re
-    # Strip bare 4-digit years (cause impossible AND with other date terms) and cap tokens
     tokens = [t for t in query.split() if not _re.fullmatch(r'\d{4}', t)][:8]
-    query = " ".join(tokens)
-    r = requests.get(f"{PUBMED}/esearch.fcgi", params={
-        "db": "pubmed", "term": query, "retmax": max_results, "retmode": "json"
-    })
-    ids = r.json()["esearchresult"]["idlist"]
+    ids = []
+    for n in range(len(tokens), 1, -1):
+        q = " ".join(tokens[:n])
+        r = requests.get(f"{PUBMED}/esearch.fcgi", params={
+            "db": "pubmed", "term": q, "retmax": max_results, "retmode": "json"
+        })
+        ids = r.json().get("esearchresult", {}).get("idlist", [])
+        if ids:
+            break
     if not ids:
         return []
     r2 = requests.get(f"{PUBMED}/esummary.fcgi", params={
