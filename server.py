@@ -287,7 +287,7 @@ def _blast_submit(sequence: str, program: str, database: str) -> str:
     raise ValueError("Could not extract RID from BLAST response")
 
 
-def _blast_poll(rid: str, timeout: int = 300) -> bytes:
+def _blast_poll(rid: str, timeout: int = 500) -> bytes:
     # Returns raw bytes — NCBI JSON2 response is a ZIP archive
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -329,9 +329,9 @@ def _blast_parse(raw_bytes: bytes, max_hits: int) -> list[dict]:
 
 
 @mcp.tool()
-def blast_protein(sequence: str, database: str = "swissprot", max_hits: int = 10) -> list[dict]:
-    """Run BLASTp (protein vs protein) on NCBI. Takes 2-3 minutes.
-    database: 'swissprot' (recommended), 'pdb' (structures only), 'nr' (comprehensive, slower).
+def blast_protein(sequence: str, database: str = "nr", max_hits: int = 10) -> list[dict]:
+    """Run BLASTp (protein vs protein) on NCBI. Takes 2-5 minutes.
+    database: 'nr' (recommended, comprehensive), 'pdb' (structures only), 'swissprot' (reviewed only).
     Strips spaces/gaps from sequence automatically."""
     sequence = sequence.replace(" ", "").replace("-", "")
     return _blast_parse(_blast_poll(_blast_submit(sequence, "blastp", database)), max_hits)
@@ -346,8 +346,8 @@ def blast_nucleotide(sequence: str, database: str = "nt", max_hits: int = 10) ->
 
 
 @mcp.tool()
-def blast_translated(sequence: str, database: str = "swissprot", max_hits: int = 10) -> list[dict]:
-    """Run BLASTx (translated nucleotide vs protein) on NCBI. Takes 2-3 minutes.
+def blast_translated(sequence: str, database: str = "nr", max_hits: int = 10) -> list[dict]:
+    """Run BLASTx (translated nucleotide vs protein) on NCBI. Takes 2-5 minutes.
     Strips spaces from sequence automatically."""
     sequence = sequence.replace(" ", "").replace("-", "")
     return _blast_parse(_blast_poll(_blast_submit(sequence, "blastx", database)), max_hits)
